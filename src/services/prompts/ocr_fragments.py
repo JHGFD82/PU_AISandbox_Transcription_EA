@@ -1,14 +1,22 @@
-"""OCR (transcription) and transcription-review prompt fragments.
+"""The actual instruction text sent to the AI model for East-Asia OCR and transcription review.
+
+Every constant in this file is a block of English instructions — the exact
+wording the AI model reads before it transcribes an image or reviews a
+transcription for errors. There is no logic here, only text; a few
+constants contain ``{placeholder}`` spots (Python's ``str.format()``
+syntax) that ``ocr.py`` and ``transcription_review.py`` fill in with
+specifics like the target language.
+
+To change how the model is instructed to handle kanbun, vertical script,
+table preservation, or any other East-Asia-specific behavior, edit the
+relevant constant directly — no other file needs to change. The constants
+are grouped by what they're used for: OCR system/user prompts, kanbun
+script guidance, the per-language script-guidance dictionary
+(``OCR_SCRIPT_GUIDANCE``), and transcription-review prompts.
 
 Used by:
-  src/services/prompts/ocr.py                    (OcrPromptSpec)
-  src/services/prompts/transcription_review.py   (TranscriptionReviewPromptSpec)
-
-All string content, no logic. Variables use str.format() placeholders.
-
-This file is the authoritative home for transcription-mode prompts and ships
-with PU_AISandbox_Transcription.  To change prompt text, edit the constants
-directly and open a pull request.
+  ``src/services/prompts/ocr.py`` (assembles ``OcrPromptSpec``'s prompts from these fragments)
+  ``src/services/prompts/transcription_review.py`` (assembles ``TranscriptionReviewPromptSpec``'s prompts)
 """
 
 # ---------------------------------------------------------------------------

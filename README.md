@@ -1,8 +1,14 @@
 # East Asia Transcription Plugin
 
-Extends the [PU AI Sandbox](https://github.com/princeton-oit/PU_AISandbox) `transcribe` and `transcription_review` commands with East Asian language support: Japanese, Chinese, and Korean — plus English with full kanbun, vertical script, multi-pass OCR, table preservation, and parallel-worker options.
+Extends the [PU AI Sandbox](https://github.com/princeton-oit/PU_AISandbox) `transcribe` and `transcription_review` commands with East Asian language support: Japanese, Chinese, and Korean, with kanbun, vertical script, multi-pass OCR, table preservation, and parallel-worker options. English stays with the base plugin — see "Dispatch Model" below.
 
 **Requires the base transcription plugin** (`plugins/transcription/`, which ships with the main repo) to be present. The base plugin owns the service layer and English OCR; this plugin adds EA language routing and EA-specific CLI flags.
+
+---
+
+## Known Issues
+
+- **`transcription_review` currently fails for Chinese, Japanese, and Korean.** It calls a method that doesn't exist on the request handler, so every `transcription_review zh|jp|kr ...` run raises an error before contacting the AI model. `transcribe` is unaffected. This is a known, tracked issue — check the git history or open issues before reporting it again.
 
 ---
 
@@ -21,16 +27,18 @@ The plugin is discovered automatically at startup. No changes to the main repo a
 
 ## Dispatch Model
 
-When both plugins are installed, the EA plugin's registrations for `en`, `zh`, `jp`, and `kr` **override** the base plugin's English-only registration. The base plugin loads first, but the EA plugin supersedes it for all four language codes, adding kanbun, vertical-script, spread, multi-pass, and parallel-worker support for every language including English.
+When both plugins are installed, the plugin loader merges them into a single `DispatchPlugin` for each command. Each plugin declares a `handles` list of the full language names it owns; a request is routed to whichever plugin's `handles` list contains the requested language. This plugin's `handles` list is `["Chinese", "Japanese", "Korean"]` — it does **not** include English, so `en` is always routed to the base plugin, even when this plugin is installed.
 
 | Language code | Handled by |
 |---|---|
-| `en` | This plugin (EA version — richer flag set than the base plugin) |
+| `en` | Base plugin (English-only prompts; the flags below appear on the command line but the base plugin's `run()` doesn't act on them for `en`) |
 | `zh` | This plugin |
 | `jp` | This plugin |
 | `kr` | This plugin |
 
-When the EA plugin is **not** installed, `en` falls back to the base plugin's simpler English-only transcription.
+The command-line flags below are added to `transcribe`/`transcription_review` regardless of which language is requested (both plugins contribute flags to the same shared parser), but kanbun/vertical/spread/table-preservation only take effect for `zh`, `jp`, and `kr`, since only this plugin's `run()` reads them.
+
+When this plugin is **not** installed, `zh`/`jp`/`kr` aren't recognized at all — only the base plugin's `en` remains available.
 
 ---
 

@@ -1,9 +1,9 @@
-# Transcription Plugin — AI Coding Assistant Instructions
+# Transcription EA Plugin — AI Coding Assistant Instructions
 
 ## Plugin Overview
-This is the `transcribe` and `transcription_review` command plugin for [PU AI Sandbox](https://github.com/princeton-oit/PU_AISandbox). It provides OCR transcription of images and image folders (with optional multi-pass refinement) and structured JSON error-review of existing transcriptions.
+This is the East-Asia extension for the `transcribe` and `transcription_review` commands in [PU AI Sandbox](https://github.com/princeton-oit/PU_AISandbox) — it adds Chinese, Japanese, and Korean (plus kanbun, vertical script, table preservation, multi-pass refinement, and parallel folder processing) on top of the base plugin's English-only support.
 
-This repo lives at `plugins/transcription/` inside the main PU_AISandbox repo. All `src.*` imports (e.g. `src.cli`, `src.runtime`, `src.processors`) resolve against the main repo's `src/` — they are *not* in this plugin's directory.
+This repo lives at `plugins/transcription-ea/` inside the main PU_AISandbox repo, and **requires** `plugins/transcription/` (the base plugin) to also be installed — see "Relationship to the Base Plugin and Main Repo" below. All `src.*` imports (e.g. `src.cli`, `src.runtime`, `src.processors`) resolve against the main repo's `src/` — they are *not* in this plugin's directory.
 
 ---
 
@@ -32,17 +32,19 @@ tests/
 
 ## Architecture: sys.modules Injection
 
-`plugin.py` calls `_register()` at import time to inject each `src/services/*` module into `sys.modules` under its canonical `src.services.*` name. This makes the plugin's local copies available to the main repo's runtime without duplicating the import paths.
+`plugin.py` calls `_register()` at import time to inject each `src/services/*` module into `sys.modules` under its canonical `src.services.*` name. This makes the plugin's local copies available to the main repo's runtime without duplicating the import paths. The base plugin (`plugins/transcription/`) registers its own copies under the **same** module names.
 
 **Injection order matters** — always register in dependency order:
-1. `pu_plugin.transcription.settings` (settings.py — registered under a plugin-private name so it doesn't collide with the main repo's `src.settings`)
+1. `pu_plugin.transcription.settings` (settings.py)
 2. `src.services.prompts.ocr_fragments`
 3. `src.services.prompts.ocr`
 4. `src.services.prompts.transcription_review`
 5. `src.services.image_processor_service`
 6. `src.services.transcription_review_service`
 
-If a module is already in `sys.modules` (main repo loaded it first), `_register()` skips it. Never change this skip-if-present guard.
+**Load order and `override`**: plugins load in alphabetical folder order, so `transcription` (base) always finishes registering before `transcription-ea` gets a turn. For modules 2–6 above, `_register()` is called with `override=True`, which forces this plugin's copy to replace whatever the base plugin already registered — required, because those five modules are where this plugin's actual EA behavior (kanbun, vertical, tables, script guidance) lives, and the base plugin's own copies of the same module names are stripped-down English-only versions that silently discard those settings. **Do not remove `override=True` from those five calls** — without it, every EA-specific flag (`--kanbun`, `--vertical`, `--spread`, `--preserve-tables`) silently becomes a no-op whenever the base plugin is also installed (the normal case), with no error raised. This was a real, previously-shipped bug; see git history for the fix.
+
+Registration #1 (`pu_plugin.transcription.settings`) is the one exception — it intentionally stays `override=False` (skip-if-already-registered). This plugin's own `settings.py`/`settings.toml` don't define `DEFAULT_OCR_PASSES`, so it's meant to fall through to the base plugin's copy, which does. If you add a new setting this plugin needs to override, add it to `src/settings.py` here first, then reconsider whether this registration also needs `override=True`.
 
 ---
 
@@ -95,14 +97,17 @@ Exposed constants (all have fallback defaults in code):
 - Accepts raw text (from a file or pasted input).
 - Returns a structured JSON report: overall quality assessment, `global_replacements` for systematic errors, and per-line `corrections` for context-specific errors.
 - `_inject_model_and_validate()` strips markdown fences and injects the actual model name into `meta.model` before returning the response.
+- **KNOWN BUG**: `plugin.py`'s `run()` calls `sandbox.process_transcription_review(...)`, a `SandboxProcessor` method that doesn't exist anywhere (not on the class, not a registered Mixin). Every `transcription_review` invocation through this plugin (jp/zh/kr) currently raises `AttributeError`. The base plugin's own `transcription_review` path calls a local `_run_transcription_review()` helper instead (see `plugins/transcription/plugin.py`) — this plugin needs the equivalent, extended to pass `kanbun`/`kanbun_main` through to `review_transcription()`. Flagged but intentionally left unfixed as of this doc's last update; see the comment at the call site in `plugin.py`.
 
 ---
 
 ## `plugin.py` — ModePlugin Contract
 
-`TranscriptionPlugin` satisfies the main repo's `ModePlugin` protocol:
+`TranscriptionPlugin` satisfies the main repo's extension-plugin interface (it declares `handles`, not just `commands`):
 - `commands = ["transcribe", "transcription_review"]`
-- `register_subparsers(subparsers)` — adds both subparsers with all flags
+- `handles = ["Chinese", "Japanese", "Korean"]`
+- `register_command_flags(parser)` — the normal path: adds EA-only flags to a subparser the base plugin already created, via `DispatchPlugin`
+- `register_subparsers(subparsers)` — fallback path only, used if the base plugin is absent; builds full standalone subparsers for all four languages
 - `run(args, professor, model, temperature, top_p, max_tokens)` — validates flags, wires services, delegates to `SandboxProcessor`
 
 **Flag validation in `run()`**:
@@ -118,7 +123,7 @@ Always add new flag validation in `run()`, not in `register_subparsers`.
 Tests run from this plugin's directory using the main repo's venv:
 
 ```bash
-cd plugins/transcription
+cd plugins/transcription-ea
 pytest                              # all tests
 pytest -v                           # verbose
 pytest -k "kanbun"                  # filter by keyword
@@ -140,17 +145,21 @@ pytest -k "kanbun"                  # filter by keyword
 
 ---
 
-## Relationship to Main Repo
+## Relationship to the Base Plugin and Main Repo
 
 This plugin imports the following from the main repo at runtime (not available in this repo alone):
 - `src.cli`: `add_common_flags`, `add_notes_flags`
-- `src.config`: `parse_single_language_code`
+- `src.config`: `parse_single_language_code`, `register_language`
 - `src.errors`: `CLIError`
 - `src.services.constants`: `DEFAULT_PARALLEL_WORKERS`
-- `src.settings`: `DEFAULT_OCR_PASSES`
+- `src.settings`: `DEFAULT_OCR_PASSES` (actually resolves to the base plugin's `settings.py` — see "Architecture: sys.modules Injection" above)
 - `src.runtime.sandbox_processor`: `SandboxProcessor`
 
 These imports are at module level in `plugin.py` and will fail if the plugin is loaded outside the main repo context. This is expected and by design.
+
+This plugin also depends on the **base transcription plugin** (`plugins/transcription/`) being installed for two things it does *not* provide itself:
+- `SandboxProcessor.process_image` / `process_image_folder` — Mixin methods registered by the base plugin under `src.runtime.image_handler` (see `_discover_plugin_mixins()` in `src/runtime/sandbox_processor.py`). This plugin's `run()` calls these directly; it has no image-handling Mixin of its own.
+- The `transcribe`/`transcription_review` subcommands themselves, via the `DispatchPlugin` merge described above — this plugin's `register_subparsers()` is a fallback, not the normal path.
 
 ---
 

@@ -1,44 +1,76 @@
-"""PU_AISandbox Transcription EA plugin.
+"""PU_AISandbox Transcription EA (East Asia) plugin.
 
-Provides the ``transcribe`` command (OCR image transcription) and the
-``transcription_review`` command (OCR error review) for East Asia languages
-(Chinese, Japanese, Korean) with kanbun, vertical script, multi-pass, and
-parallel-worker support.
+Adds Chinese, Japanese, and Korean to the ``transcribe`` (image-to-text OCR)
+and ``transcription_review`` (OCR error-checking) commands the base
+transcription plugin already provides for English. It also adds several
+flags only these languages need: vertical script direction, two-page
+spreads, kanbun, multiple OCR passes, and running several images in
+parallel when transcribing a whole folder at once.
 
-Clone this repo into ``plugins/transcription-ea/`` in the main PU_AISandbox repo.
+Kanbun (漢文) is Classical Chinese text embedded in older Japanese sources.
+Readers add kundoku annotations — small marks like 返り点 (kaeriten,
+reading-order marks) and 送り仮名 (okurigana, grammatical hints) — next to
+the Chinese characters so the passage can be read in Japanese word order.
+``--kanbun`` tells the model to transcribe every mark exactly as written;
+``--kanbun-main`` tells it to transcribe only the large main-line characters
+and skip the small annotations (useful when only the underlying Chinese
+text is wanted).
 
-ARCHITECTURE — DispatchPlugin pattern
---------------------------------------
-This plugin declares ``handles = ['Chinese', 'Japanese', 'Korean']``.  When the
-base ``plugins/transcription/`` plugin (which handles ``['English']``) is also
-present, the plugin loader merges both into a ``DispatchPlugin`` per command.
-The DispatchPlugin calls ``register_subparsers()`` on the primary (base) plugin
-once to create the shared argparse subcommands, then calls
-``register_command_flags()`` on this (secondary) plugin to add the EA-specific
-flags.  ``run()`` is called only on the plugin whose ``handles`` list matches
-the requested language.
+Clone this repo into ``plugins/transcription-ea/`` inside the main
+PU_AISandbox repo. It **requires** the base ``plugins/transcription/``
+plugin to also be installed — this plugin borrows the base plugin's image
+handling and settings machinery rather than keeping its own separate copy
+of everything.
 
-If the base plugin is absent (unsupported but gracefully handled), this plugin
-falls back to ``register_subparsers()`` to create full standalone subcommands
-for all four languages.
+HOW THIS PLUGIN SHARES A COMMAND WITH THE BASE PLUGIN
+-------------------------------------------------------
+This plugin declares ``handles = ['Chinese', 'Japanese', 'Korean']`` and the
+base plugin declares ``handles = ['English']``. Because both plugins
+register the same two commands, the plugin loader does not treat that as a
+conflict — it notices both plugins declare a ``handles`` list and combines
+them into one ``DispatchPlugin`` per command. At startup, the DispatchPlugin
+calls the base plugin's ``register_subparsers()`` once to build the shared
+command-line flags, then calls this plugin's ``register_command_flags()`` to
+add the extra East-Asia-only flags on top. When a professor actually runs a
+command, the DispatchPlugin checks which language was requested and calls
+``run()`` on whichever plugin's ``handles`` list contains it — so
+``transcribe jp ...`` always reaches this plugin, and ``transcribe en ...``
+always reaches the base plugin.
 
-ARCHITECTURE — sys.modules injection
---------------------------------------
-``_register()`` (called at import time) injects each extracted service module
-into ``sys.modules`` under the same ``src.services.*`` name it had in the main
-repo.  This is the mechanism that keeps everything importable after the service
-files are removed from the main repo's ``src/`` directory (Phase 4 Step 5).
+If the base plugin is ever missing, this plugin falls back to its own
+``register_subparsers()`` and builds full standalone commands for all four
+languages — an unsupported but gracefully handled situation, mainly useful
+for testing this plugin on its own.
 
-For the injection to take effect *before* sandbox_processor.py's top-level
-imports run, Phase 4 Step 6 must make those imports lazy (deferred to
-``__init__`` or wrapped in ``try/except``).
+HOW THIS PLUGIN'S CODE STAYS IMPORTABLE, AND WHY LOAD ORDER MATTERS
+-----------------------------------------------------------------------
+This plugin's prompt-building and API-calling classes live in this plugin's
+own folder rather than in the main repository's ``src/`` folder, since the
+main repo no longer ships any East-Asia-specific service code at all. To
+keep those files importable under the ``src.services.*`` path other code
+expects — the same path the base plugin's own English-only classes use —
+``_register()`` (called once, at import time, below) loads each file
+directly and inserts it into Python's registry of already-imported modules
+(``sys.modules``) under that shared name, so other code can write a normal
+``import src.services.whatever`` statement without knowing the file
+actually lives inside this plugin's folder. This is the same mechanism the
+base transcription plugin uses for its own (English-only) copies of these
+same module names.
 
-run() — delegation pattern
------------------------------
-``run()`` currently delegates to ``SandboxProcessor._run_transcribe()`` and
-``SandboxProcessor._run_transcription_review()``.  This will be replaced in
-Phase 4 Step 6 when the transcription dispatch logic is moved from
-SandboxProcessor into this plugin.
+That shared naming is exactly why load order matters here. Plugins load in
+alphabetical folder order, so the base plugin (folder ``transcription``)
+always finishes registering its modules before this plugin (folder
+``transcription-ea``) gets a turn. Left unhandled, that would mean the base
+plugin's stripped-down English-only classes silently "win" the shared
+``sys.modules`` slot, and every East-Asia-only feature this plugin adds
+(kanbun, vertical script, table hints, and Chinese/Japanese/Korean-specific
+guidance) would be quietly ignored, with no error raised — flags like
+``--kanbun`` would parse fine but have no effect on the actual OCR prompt
+sent to the model. ``_register()``'s ``override`` parameter exists to
+prevent exactly that: for the modules this plugin extends, it forces this
+plugin's own copy to replace the base plugin's, regardless of which loaded
+first. See ``_register()``'s docstring below for the full explanation of
+which modules need ``override=True`` and which don't.
 """
 
 from __future__ import annotations
@@ -54,15 +86,39 @@ from typing import Optional
 _PLUGIN_DIR = Path(__file__).parent
 
 
-def _register(module_name: str, rel_path: str) -> None:
-    """Inject a plugin module into sys.modules under the src.* namespace.
+def _register(module_name: str, rel_path: str, override: bool = False) -> None:
+    """Load one of this plugin's own files and expose it under a shared ``src.*`` import path.
 
-    If the module is already present (main repo's version loaded first), the
-    registration is skipped.  After Phase 4 Step 5 (main repo files deleted)
-    and Step 6 (sandbox_processor imports made lazy), this becomes the only
-    source for these modules.
+    The base ``plugins/transcription/`` plugin registers its own English-only
+    versions of these same module names (e.g. ``src.services.image_processor_service``)
+    using the identical mechanism. Because plugins load in alphabetical folder
+    order, the base plugin's ``transcription`` folder is always loaded before
+    this plugin's ``transcription-ea`` folder, so the base plugin's modules
+    land in Python's module registry (``sys.modules``) first.
+
+    For a module this plugin only *falls back to* (currently just plugin
+    settings — see the registration call below), that's fine: skip
+    re-registering if something is already there. But for the five modules
+    below that this plugin *extends* with East-Asia-only capability (kanbun,
+    vertical script, table preservation, and so on), the base plugin's
+    stripped-down version must not be allowed to win — this plugin's version
+    has to replace it, even though it loads second. ``override=True`` does
+    that: it re-loads and overwrites the registry entry instead of leaving
+    the base plugin's copy in place.
+
+    Args:
+        module_name: The dotted import path to register the module under
+                     (e.g. ``'src.services.image_processor_service'``), matching
+                     the path other code already imports it from.
+        rel_path: The module's real file location, relative to this plugin's
+                  own folder (e.g. ``'src/services/image_processor_service.py'``).
+        override: If ``False`` (the default), do nothing when a module is
+                  already registered under ``module_name`` — first writer wins.
+                  If ``True``, always (re-)load this plugin's own copy and
+                  replace whatever is currently registered, even if the base
+                  plugin got there first.
     """
-    if module_name in sys.modules:
+    if module_name in sys.modules and not override:
         return
     path = _PLUGIN_DIR / rel_path
     if not path.exists():
@@ -74,32 +130,46 @@ def _register(module_name: str, rel_path: str) -> None:
         spec.loader.exec_module(mod)  # type: ignore[union-attr]
 
 
-# Register plugin settings first so service modules can import from src.settings
+# Register plugin settings first so service modules can import from src.settings.
+# This plugin's own settings.py doesn't define DEFAULT_OCR_PASSES (its
+# settings.toml doesn't override the OCR-passes default either), so it's
+# meant to fall through to the base plugin's copy when both are installed —
+# hence no override=True here, unlike the five registrations below.
 _register(
     "pu_plugin.transcription.settings",
     "src/settings.py",
 )
 
-# Register in dependency order: fragments → specs → services
+# Register in dependency order: fragments → specs → services. Each of these
+# gives East-Asia-specific behavior (kanbun, vertical script, table hints,
+# script-specific guidance for Chinese/Japanese/Korean) that the base
+# plugin's own same-named modules don't have, so override=True makes sure
+# this plugin's copy is the one every other plugin ends up using — see the
+# override parameter's explanation in _register() above.
 _register(
     "src.services.prompts.ocr_fragments",
     "src/services/prompts/ocr_fragments.py",
+    override=True,
 )
 _register(
     "src.services.prompts.ocr",
     "src/services/prompts/ocr.py",
+    override=True,
 )
 _register(
     "src.services.prompts.transcription_review",
     "src/services/prompts/transcription_review.py",
+    override=True,
 )
 _register(
     "src.services.image_processor_service",
     "src/services/image_processor_service.py",
+    override=True,
 )
 _register(
     "src.services.transcription_review_service",
     "src/services/transcription_review_service.py",
+    override=True,
 )
 
 # ── Main-repo imports ─────────────────────────────────────────────────────────
@@ -123,7 +193,16 @@ register_language('kr', 'Korean')
 # ── Plugin class ──────────────────────────────────────────────────────────────
 
 class TranscriptionPlugin:
-    """OCR transcription and transcription-review mode plugin."""
+    """Adds Chinese, Japanese, and Korean support to OCR transcription and transcription review.
+
+    Extends the base transcription plugin's ``transcribe`` and
+    ``transcription_review`` commands (which handle English on their own)
+    to also cover Chinese, Japanese, and Korean, plus flags those languages
+    specifically need: vertical script direction, two-page spreads, kanbun
+    (see the module docstring above), multiple OCR passes, and parallel
+    processing of a folder of images. See the module docstring above for how
+    this plugin combines with the base plugin at startup.
+    """
 
     commands: list[str] = ["transcribe", "transcription_review"]
     # ``handles`` lists the full language names (as returned by
@@ -135,11 +214,23 @@ class TranscriptionPlugin:
     # ── Argument registration ─────────────────────────────────────────────────
 
     def register_command_flags(self, parser: argparse.ArgumentParser) -> None:
-        """Add EA-specific flags to an existing subcommand parser.
+        """Add the East-Asia-only command-line flags to a command the base plugin already built.
 
-        Called by DispatchPlugin after the primary (base) plugin has registered
-        the subcommand and its shared flags.  Detects which subcommand owns
-        *parser* from the last word of ``parser.prog``.
+        Called by ``DispatchPlugin`` once the base plugin has registered a
+        subcommand (``transcribe`` or ``transcription_review``) and its
+        shared flags (like ``-i``/``--input``). This method figures out
+        which of the two subcommands it was handed by reading the last word
+        of the parser's program name, then adds the flags relevant to that
+        command — e.g. ``transcribe`` gets ``--vertical``, ``--spread``,
+        ``--kanbun``/``--kanbun-main``, ``--passes``, ``--preserve-tables``,
+        and ``--workers``, while ``transcription_review`` only gets the
+        kanbun flags (the others don't apply to reviewing already-typed
+        text).
+
+        Args:
+            parser: The argparse subcommand parser the base plugin already
+                    created (e.g. the parser for ``transcribe``), which this
+                    method adds more flags onto in place.
         """
         command = parser.prog.rsplit(None, 1)[-1]
         if command == "transcribe":
@@ -209,13 +300,20 @@ class TranscriptionPlugin:
         self,
         subparsers: argparse._SubParsersAction,
     ) -> None:
-        """Register standalone subcommands for all four languages.
+        """Build full standalone ``transcribe``/``transcription_review`` commands for all four languages.
 
-        Used only when this plugin loads without a DispatchPlugin (i.e. the
-        base transcription plugin is absent — an unsupported but gracefully
-        handled configuration).  In the normal two-plugin setup, DispatchPlugin
-        calls the base plugin's ``register_subparsers()`` then calls
-        ``register_command_flags()`` on this plugin instead.
+        This is a fallback path, only used when this plugin is running
+        without the base transcription plugin installed alongside it — an
+        unsupported but gracefully handled situation (see the module
+        docstring above). In the normal setup, the base plugin builds these
+        two commands via its own ``register_subparsers()``, and this plugin
+        only adds its extra flags on top via ``register_command_flags()``
+        above; this method never runs in that case.
+
+        Args:
+            subparsers: The shared subcommand registry passed in by the CLI
+                        startup code, the same object every plugin's
+                        commands get added to.
         """
         # ── transcribe ────────────────────────────────────────────────────────
         if "transcribe" not in subparsers.choices:
@@ -335,7 +433,42 @@ class TranscriptionPlugin:
         top_p: Optional[float],
         max_tokens: Optional[int],
     ) -> None:
-        """Execute the transcribe or transcription_review command."""
+        """Run the ``transcribe`` or ``transcription_review`` command for Chinese, Japanese, or Korean.
+
+        Builds a ``SandboxProcessor`` (which resolves the professor's API
+        key, sets up token/cost tracking, and lazily creates whichever
+        services are needed), then branches on ``args.command`` to run the
+        requested command: transcribing an image or folder of images with
+        this plugin's East-Asia-specific options applied (vertical script,
+        two-page spreads, kanbun, multiple OCR passes, parallel workers), or
+        reviewing a previously-produced transcription for likely OCR errors.
+        The base transcription plugin's ``process_image``/``process_image_folder``
+        methods (attached to ``SandboxProcessor`` for every installed plugin
+        to share) are reused here rather than duplicated.
+
+        Args:
+            args: The object holding all the parsed command-line flags for
+                  this run (which command was invoked, the input file path,
+                  whether ``--kanbun`` or ``--dry-run`` was passed, etc.).
+            professor: The Princeton NetID whose configuration and API key
+                       should be used for this run (e.g. ``'heller'``).
+            model: The AI model explicitly requested on the command line, or
+                   ``None`` to use this plugin's configured default.
+            temperature: The requested sampling temperature (controls how
+                         predictable vs. varied the model's wording is), or
+                         ``None`` to use the default.
+            top_p: The requested nucleus-sampling value (an alternative way
+                   of controlling response variety), or ``None`` to use the
+                   default.
+            max_tokens: The requested maximum response length, in tokens
+                        (the small chunks of text models process and bill
+                        by), or ``None`` to use the default.
+
+        Raises:
+            CLIError: If a required input is missing, the wrong file type
+                is supplied, ``--passes`` is less than 1, or the AI model
+                call fails.
+        """
         import os
         from src.runtime.sandbox_processor import SandboxProcessor
 
@@ -448,6 +581,13 @@ class TranscriptionPlugin:
                 )
 
             output_file_r = sandbox._resolve_output_path(args)
+            # KNOWN BUG: SandboxProcessor has no process_transcription_review method
+            # (not a Mixin, not defined anywhere) — this raises AttributeError for
+            # every transcription_review run in this plugin (jp/zh/kr). The base
+            # plugin's own transcription_review path calls a local
+            # _run_transcription_review() helper instead (see
+            # plugins/transcription/plugin.py); this plugin never got the equivalent.
+            # Left unfixed intentionally — flagged for a follow-up fix.
             sandbox.process_transcription_review(text, language, kanbun=kanbun, kanbun_main=kanbun_main, output_file=output_file_r)
 
 

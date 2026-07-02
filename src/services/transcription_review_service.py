@@ -1,4 +1,4 @@
-"""Transcription review service — reviews AI OCR output for errors and misreadings."""
+"""Checks a previously-produced transcription for likely OCR mistakes and reports them as a structured summary."""
 
 import json
 import logging
@@ -39,6 +39,28 @@ class TranscriptionReviewService(BaseService):
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
     ):
+        """Set up the service with the professor's API key and this run's model/sampling settings.
+
+        Args:
+            api_key: The professor's PortKey API key (a secret string that
+                     authorizes calls to the AI model), already resolved by
+                     ``SandboxProcessor``.
+            professor: The professor's identifier (e.g. ``'heller'``), used
+                       when recording token usage.
+            token_tracker: The shared object that records how many tokens
+                           (the small chunks of text the model processes and
+                           bills by) this run consumes, or ``None`` to
+                           create one automatically.
+            model: A specific AI model to use instead of the default review
+                   model, or ``None`` for the default.
+            temperature: A custom sampling temperature (controls how
+                         predictable vs. varied the model's output is), or
+                         ``None`` to use the review default.
+            top_p: A custom nucleus-sampling value (an alternative way of
+                   controlling output variety), or ``None`` for the default.
+            max_tokens: A custom maximum response length in tokens, or
+                        ``None`` for the default.
+        """
         super().__init__(api_key, professor, token_tracker, None, model, temperature, top_p, max_tokens)
 
     def build_prompts(
@@ -48,9 +70,23 @@ class TranscriptionReviewService(BaseService):
         kanbun_main: bool = False,
         text: str = "[transcription text would appear here]",
     ) -> tuple[str, str]:
-        """Return (system_prompt, user_prompt) without calling the API.
+        """Build the review prompts without calling the AI model — used to preview a request under ``--dry-run`` or ``--notes``.
 
-        Used by --dry-run and --notes preview modes.
+        Args:
+            language: The full language name the transcription is written
+                      in (e.g. ``'Japanese'``).
+            kanbun: Whether the transcription contains kanbun with kundoku
+                    annotations that should be treated as intentional
+                    rather than flagged as errors.
+            kanbun_main: Whether the transcription was produced in
+                         main-character-only mode, so the model shouldn't
+                         flag missing annotations as errors.
+            text: Placeholder or real transcription text to show in the
+                  preview.
+
+        Returns:
+            A ``(system_prompt, user_prompt)`` pair of the exact text that
+            would be sent to the AI model.
         """
         spec = TranscriptionReviewPromptSpec(
             language=language,
@@ -68,6 +104,7 @@ class TranscriptionReviewService(BaseService):
         system_prompt: str,
         user_prompt: str,
     ) -> Any:
+        """Send the review prompts to the AI model and return its raw response."""
         temperature, top_p, max_tokens = self._resolve_sampling_params(
             model, TRANSCRIPTION_REVIEW_TEMPERATURE, TRANSCRIPTION_REVIEW_TOP_P, TRANSCRIPTION_REVIEW_MAX_TOKENS
         )
@@ -115,20 +152,32 @@ class TranscriptionReviewService(BaseService):
         kanbun: bool = False,
         kanbun_main: bool = False,
     ) -> str:
-        """Review a transcription and return a JSON report string.
+        """Check a transcription for likely OCR mistakes and return the AI model's findings as a JSON report string.
 
-        Parameters
-        ----------
-        text:
-            The transcription text to review.
-        language:
-            Full language name (e.g. ``"Japanese"``), as returned by
-            ``parse_single_language_code``.
-        kanbun:
-            Whether the text contains kanbun with kundoku annotations.
-        kanbun_main:
-            Whether the transcription was produced in main-character-only mode
-            (okurigana, furigana, kaeriten omitted intentionally).
+        The report includes an overall quality assessment, a guess at the
+        source document's genre/period, and a list of specific suspected
+        errors with one or more corrected candidates each, most-likely
+        first.
+
+        Args:
+            text: The transcription text to check for errors — the
+                  *output* of a prior transcription run, not the original
+                  image or document.
+            language: The full language name the transcription is written
+                      in (e.g. ``'Japanese'``), as returned by
+                      ``parse_single_language_code``.
+            kanbun: Whether the text contains kanbun with kundoku
+                    annotations that should be treated as intentional
+                    rather than flagged as errors.
+            kanbun_main: Whether the transcription was produced in
+                         main-character-only mode (okurigana, furigana,
+                         kaeriten intentionally omitted), so their absence
+                         shouldn't be flagged as an error.
+
+        Returns:
+            A JSON-formatted string report (pretty-printed for readability),
+            or an empty string if the AI model's response had no usable
+            content.
         """
         model = self._get_model()
         system_role = get_model_system_role(model)

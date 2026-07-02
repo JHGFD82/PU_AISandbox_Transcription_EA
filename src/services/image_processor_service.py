@@ -1,4 +1,4 @@
-"""Image processing service for OCR operations using the Princeton AI Sandbox."""
+"""Turns an image of East-Asia-language text into typed text by calling the AI model, with kanbun and vertical-script support."""
 
 import logging
 import os
@@ -27,17 +27,50 @@ from ..settings import (
 
 
 class ImageProcessorService(BaseService):
-    """Handles OCR operations using PortKey API."""
+    """Reads text out of an image (OCR) for Chinese, Japanese, Korean, or English, via the AI model.
+
+    Every ``transcribe`` command ends up calling this class's
+    ``process_image_ocr()`` method once per image. Three settings —
+    ``kanbun``, ``kanbun_main``, and ``tables`` — are set as plain
+    attributes on the instance (by ``transcription-ea/plugin.py``, from the
+    corresponding command-line flags) rather than passed as arguments to
+    every method, since they stay the same for an entire transcription run.
+    See the plugin's module docstring for what kanbun means.
+    """
 
     def __init__(self, api_key: str, professor: Optional[str] = None, token_tracker: Optional[TokenTracker] = None, token_tracker_file: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None, top_p: Optional[float] = None, max_tokens: Optional[int] = None):
+        """Set up the service with the professor's API key and this run's model/sampling settings.
+
+        Args:
+            api_key: The professor's PortKey API key (a secret string that
+                     authorizes calls to the AI model), already resolved by
+                     ``SandboxProcessor``.
+            professor: The professor's identifier (e.g. ``'heller'``), used
+                       when recording token usage.
+            token_tracker: The shared object that records how many tokens
+                           (the small chunks of text the model processes and
+                           bills by) this run consumes, or ``None`` to
+                           create one automatically.
+            token_tracker_file: Path to the token-usage file to read/write,
+                                 or ``None`` to use the default location.
+            model: A specific AI model to use instead of the default OCR
+                   model (e.g. ``'gpt-4o'``), or ``None`` for the default.
+            temperature: A custom sampling temperature (controls how
+                         predictable vs. varied the model's output is), or
+                         ``None`` to use the OCR default.
+            top_p: A custom nucleus-sampling value (an alternative way of
+                   controlling output variety), or ``None`` for the default.
+            max_tokens: A custom maximum response length in tokens, or
+                        ``None`` for the default.
+        """
         super().__init__(api_key, professor, token_tracker, token_tracker_file, model, temperature, top_p, max_tokens)
         self.image_processor = ImageProcessor()
         self.kanbun: bool = False
         self.kanbun_main: bool = False
         self.tables: bool = False
-    
+
     def _get_model(self) -> str:
-        """Get the model to use for OCR, preferring custom model if specified and supports vision."""
+        """Pick which AI model to use for OCR: the professor's custom choice if it supports images, otherwise the configured OCR default."""
         ocr_default = get_default_model("ocr")
         model = resolve_model(
             requested_model=self.custom_model,
@@ -48,9 +81,9 @@ class ImageProcessorService(BaseService):
         if not self.custom_model and model != ocr_default:
             logging.warning(f"OCR default model '{ocr_default}' not available; using '{model}' instead.")
         return model
-    
+
     def _create_ocr_prompt(self, target_language: str, vertical: bool = False, spread: bool = False) -> tuple[str, str]:
-        """Create system and user prompts for OCR."""
+        """Build the system and user prompt text for one OCR request, combining the caller's arguments with this instance's kanbun/tables settings."""
         spec = OcrPromptSpec(
             target_language=target_language,
             vertical=vertical,
@@ -64,14 +97,23 @@ class ImageProcessorService(BaseService):
         return spec.system_prompt(), spec.user_prompt()
 
     def build_prompts(self, target_language: str, vertical: bool = False, spread: bool = False) -> tuple[str, str]:
-        """Return (system_prompt, user_prompt) without calling the API.
+        """Build the OCR prompts without calling the AI model — used to preview a request under ``--dry-run`` or ``--notes``.
 
-        Used by --dry-run mode to preview what would be sent to the model.
+        Args:
+            target_language: The full language name to transcribe (e.g.
+                              ``'Japanese'``).
+            vertical: Whether the source text runs top-to-bottom in
+                      right-to-left columns.
+            spread: Whether the image is a two-page spread.
+
+        Returns:
+            A ``(system_prompt, user_prompt)`` pair of the exact text that
+            would be sent to the AI model.
         """
         return self._create_ocr_prompt(target_language, vertical=vertical, spread=spread)
 
     def _build_refinement_prompt(self, target_language: str, vertical: bool = False, spread: bool = False) -> str:
-        """Build the user prompt for a refinement pass (pass 2+)."""
+        """Build the prompt for a refinement pass (``--passes`` 2 and later), asking the model to re-check its own prior transcription."""
         spec = OcrPromptSpec(target_language=target_language, vertical=vertical, spread=spread, kanbun=self.kanbun, kanbun_main=self.kanbun_main)
         return spec.refinement_prompt()
 
@@ -155,10 +197,31 @@ class ImageProcessorService(BaseService):
         )
 
     def process_image_ocr(self, file_path: str, target_language: str, output_format: str = "console", vertical: bool = False, spread: bool = False, passes: int = 1) -> str:
-        """Perform OCR on an image file using the specified model with retry logic.
+        """Read one image file and return the text the AI model transcribed from it.
 
-        If passes > 1, each additional pass sends the image and prior transcription back
-        to the model for review and correction.
+        Automatically retries the AI model call if it returns an empty or
+        malformed response. If ``passes`` is greater than 1, each
+        additional pass sends the image and the previous pass's
+        transcription back to the model, asking it to review and correct
+        its own earlier work — useful for difficult handwriting or
+        low-quality scans.
+
+        Args:
+            file_path: The full path to the image file to transcribe.
+            target_language: The full language name to transcribe (e.g.
+                              ``'Japanese'``).
+            output_format: Unused by this method directly; kept for
+                            interface compatibility with callers.
+            vertical: Whether the source text runs top-to-bottom in
+                      right-to-left columns.
+            spread: Whether the image is a two-page spread.
+            passes: How many OCR passes to run (1 = no refinement).
+
+        Returns:
+            The transcribed text after all requested passes complete.
+
+        Raises:
+            ValueError: If the resolved model doesn't support image input.
         """
         model = self._get_model()
 
