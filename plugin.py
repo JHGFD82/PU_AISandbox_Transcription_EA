@@ -77,9 +77,12 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import logging
 import sys
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 # ── Module registration (must run at import time) ────────────────────────────
 
@@ -189,6 +192,57 @@ register_language('en', 'English')
 register_language('zh', 'Chinese')
 register_language('jp', 'Japanese')
 register_language('kr', 'Korean')
+
+
+# ── Shared execution helper ────────────────────────────────────────────────────
+
+def _run_transcription_review(
+    sandbox: "SandboxProcessor",  # noqa: F821 — imported lazily in run(), only for type hints
+    text: str,
+    language: str,
+    kanbun: bool = False,
+    kanbun_main: bool = False,
+    output_file: Optional[str] = None,
+) -> None:
+    """Check a transcription for likely OCR mistakes and print (and optionally save) the result.
+
+    This mirrors the base transcription plugin's own
+    ``_run_transcription_review()`` helper (see
+    ``plugins/transcription/plugin.py``), extended with the ``kanbun``/
+    ``kanbun_main`` settings this plugin's languages need.
+
+    Args:
+        sandbox: The active ``SandboxProcessor`` for this run, which owns
+                 the API key, model, and the transcription-review service
+                 that actually calls the AI model.
+        text: The transcription text to check for errors.
+        language: The language the transcription is written in (e.g.
+                  ``'Japanese'``).
+        kanbun: Whether the text contains kanbun with kundoku annotations
+                that should be treated as intentional rather than flagged
+                as errors.
+        kanbun_main: Whether the transcription was produced in
+                     main-character-only mode, so the model shouldn't flag
+                     missing annotations as errors.
+        output_file: Where to save the review report as a text file, or
+                     ``None`` to only print it to the screen.
+
+    Raises:
+        CLIError: If the AI model call fails.
+    """
+    from src.errors import CLIError
+    from src.output.file_output import FileOutputHandler
+    try:
+        result_json = sandbox.transcription_review_service.review_transcription(
+            text, language, kanbun=kanbun, kanbun_main=kanbun_main
+        )
+        print("\n" + result_json)
+        if output_file:
+            FileOutputHandler.save_to_text_file(result_json, output_file, label="Review")
+    except Exception as e:
+        logger.error(f"Error during transcription review: {e}", exc_info=True)
+        raise CLIError(f"Error during transcription review: {e}") from e
+
 
 # ── Plugin class ──────────────────────────────────────────────────────────────
 
@@ -581,14 +635,9 @@ class TranscriptionPlugin:
                 )
 
             output_file_r = sandbox._resolve_output_path(args)
-            # KNOWN BUG: SandboxProcessor has no process_transcription_review method
-            # (not a Mixin, not defined anywhere) — this raises AttributeError for
-            # every transcription_review run in this plugin (jp/zh/kr). The base
-            # plugin's own transcription_review path calls a local
-            # _run_transcription_review() helper instead (see
-            # plugins/transcription/plugin.py); this plugin never got the equivalent.
-            # Left unfixed intentionally — flagged for a follow-up fix.
-            sandbox.process_transcription_review(text, language, kanbun=kanbun, kanbun_main=kanbun_main, output_file=output_file_r)
+            _run_transcription_review(
+                sandbox, text, language, kanbun=kanbun, kanbun_main=kanbun_main, output_file=output_file_r
+            )
 
 
 plugin = TranscriptionPlugin()

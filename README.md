@@ -6,12 +6,6 @@ Extends the [PU AI Sandbox](https://github.com/princeton-oit/PU_AISandbox) `tran
 
 ---
 
-## Known Issues
-
-- **`transcription_review` currently fails for Chinese, Japanese, and Korean.** It calls a method that doesn't exist on the request handler, so every `transcription_review zh|jp|kr ...` run raises an error before contacting the AI model. `transcribe` is unaffected. This is a known, tracked issue — check the git history or open issues before reporting it again.
-
----
-
 ## Installation
 
 Clone this repo into the `plugins/transcription-ea/` directory inside the main PU_AISandbox repo:

@@ -97,7 +97,7 @@ Exposed constants (all have fallback defaults in code):
 - Accepts raw text (from a file or pasted input).
 - Returns a structured JSON report: overall quality assessment, `global_replacements` for systematic errors, and per-line `corrections` for context-specific errors.
 - `_inject_model_and_validate()` strips markdown fences and injects the actual model name into `meta.model` before returning the response.
-- **KNOWN BUG**: `plugin.py`'s `run()` calls `sandbox.process_transcription_review(...)`, a `SandboxProcessor` method that doesn't exist anywhere (not on the class, not a registered Mixin). Every `transcription_review` invocation through this plugin (jp/zh/kr) currently raises `AttributeError`. The base plugin's own `transcription_review` path calls a local `_run_transcription_review()` helper instead (see `plugins/transcription/plugin.py`) — this plugin needs the equivalent, extended to pass `kanbun`/`kanbun_main` through to `review_transcription()`. Flagged but intentionally left unfixed as of this doc's last update; see the comment at the call site in `plugin.py`.
+- `plugin.py`'s `run()` calls the module-level `_run_transcription_review()` helper (defined in `plugin.py`, mirroring the base plugin's own helper of the same name) rather than a `SandboxProcessor` method, passing `kanbun`/`kanbun_main` through to `review_transcription()`. See `tests/test_transcription_review.py` for its test coverage.
 
 ---
 
