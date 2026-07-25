@@ -4,8 +4,12 @@ Adds Chinese, Japanese, and Korean to the ``transcribe`` (image-to-text OCR)
 and ``transcription_review`` (OCR error-checking) commands the base
 transcription plugin already provides for English. It also adds several
 flags only these languages need: vertical script direction, two-page
-spreads, kanbun, multiple OCR passes, and running several images in
-parallel when transcribing a whole folder at once.
+spreads, kanbun, and multiple OCR passes. Running several images in
+parallel (``-w``/``--workers``) is *not* language-specific, so that flag
+lives on the base transcription plugin instead — this plugin's own
+``run()`` still passes ``workers`` through to ``process_image_folder()``,
+just reading it from whatever value the base plugin's flag parsed rather
+than registering a second copy of the same flag itself.
 
 Kanbun (漢文) is Classical Chinese text embedded in older Japanese sources.
 Readers add kundoku annotations — small marks like 返り点 (kaeriten,
@@ -253,9 +257,11 @@ class TranscriptionPlugin:
     ``transcription_review`` commands (which handle English on their own)
     to also cover Chinese, Japanese, and Korean, plus flags those languages
     specifically need: vertical script direction, two-page spreads, kanbun
-    (see the module docstring above), multiple OCR passes, and parallel
-    processing of a folder of images. See the module docstring above for how
-    this plugin combines with the base plugin at startup.
+    (see the module docstring above), and multiple OCR passes. Parallel
+    processing of a folder of images is handled by the base plugin's own
+    ``-w``/``--workers`` flag, not registered again here — see the module
+    docstring above. See the module docstring above for how this plugin
+    combines with the base plugin at startup.
     """
 
     commands: list[str] = ["transcribe", "transcription_review"]
@@ -272,14 +278,20 @@ class TranscriptionPlugin:
 
         Called by ``DispatchPlugin`` once the base plugin has registered a
         subcommand (``transcribe`` or ``transcription_review``) and its
-        shared flags (like ``-i``/``--input``). This method figures out
-        which of the two subcommands it was handed by reading the last word
-        of the parser's program name, then adds the flags relevant to that
-        command — e.g. ``transcribe`` gets ``--vertical``, ``--spread``,
-        ``--kanbun``/``--kanbun-main``, ``--passes``, ``--preserve-tables``,
-        and ``--workers``, while ``transcription_review`` only gets the
-        kanbun flags (the others don't apply to reviewing already-typed
-        text).
+        shared flags (like ``-i``/``--input``, and — as of the base plugin
+        gaining its own parallel-OCR support — ``-w``/``--workers``). This
+        method figures out which of the two subcommands it was handed by
+        reading the last word of the parser's program name, then adds the
+        flags relevant to that command — e.g. ``transcribe`` gets
+        ``--vertical``, ``--spread``, ``--kanbun``/``--kanbun-main``,
+        ``--passes``, and ``--preserve-tables``, while
+        ``transcription_review`` only gets the kanbun flags (the others
+        don't apply to reviewing already-typed text). ``--workers`` isn't
+        added here — it's not East-Asia-specific, so it belongs on the base
+        plugin, not duplicated per language extension (this plugin used to
+        add its own copy back when the base plugin didn't have one; keeping
+        both would make ``argparse`` see the same option registered twice
+        the moment this plugin is installed alongside the base plugin).
 
         Args:
             parser: The argparse subcommand parser the base plugin already
@@ -323,18 +335,6 @@ class TranscriptionPlugin:
                 help="Hint to the model that tabular data should be returned as Markdown "
                      "tables; the output layer renders them as proper tables in PDF/DOCX "
                      "or ASCII in TXT.",
-            )
-            parser.add_argument(
-                "-w", "--workers",
-                dest="workers",
-                type=int,
-                default=DEFAULT_PARALLEL_WORKERS,
-                metavar="N",
-                help=(
-                    "Number of parallel OCR workers when processing a folder of images "
-                    "(default: %(default)s). Ignored for single-image input. Multi-pass "
-                    "OCR within each image always runs sequentially."
-                ),
             )
         elif command == "transcription_review":
             review_ea_group = parser.add_argument_group("East Asia options")
