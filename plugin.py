@@ -186,6 +186,7 @@ _register(
 from src.cli import add_common_flags, add_notes_flags           # noqa: E402
 from src.config import parse_single_language_code, register_language  # noqa: E402
 from src.errors import CLIError                                    # noqa: E402
+from src.runtime.ui_action import UiField, register_extension_ui_hooks  # noqa: E402
 from src.services.constants import DEFAULT_PARALLEL_WORKERS       # noqa: E402
 from src.settings import DEFAULT_OCR_PASSES                       # noqa: E402
 
@@ -196,6 +197,106 @@ register_language('en', 'English')
 register_language('zh', 'Chinese')
 register_language('jp', 'Japanese')
 register_language('kr', 'Korean')
+
+
+# ── Web UI composer integration ────────────────────────────────────────────────
+# Contributes this plugin's East-Asia-only transcribe options to the base
+# transcription plugin's composer job modal — shown as a subsection once a
+# professor picks Chinese, Japanese, or Korean as the language in the image,
+# the same trigger point transcription/plugin.py's run_ui_action/
+# preview_ui_action already use for get_extension_ui_fields()/
+# apply_extension_ui_hooks() (see src/runtime/ui_action.py's
+# ExtensionUiHooks, and translation-ea/plugin.py's Kanbun registration for
+# the sibling mechanism this mirrors on the translate side).
+#
+# Two different shapes, matching how the base plugin's run_ui_action reads
+# them (see the comment there):
+#   - vertical / spread / passes: read directly and generically by the base
+#     plugin's own run_ui_action, because they're real keyword arguments
+#     process_image/process_image_folder already accept — not settings this
+#     plugin can just toggle as an attribute on the sandbox afterward.
+#     Registering them here only controls when the composer *shows* them
+#     (Chinese/Japanese/Korean only); the values still flow through the
+#     base plugin's own field-parsing, exactly like ``workers`` does.
+#   - kanbun_mode / preserve_tables: applied through this plugin's own
+#     ``_apply_ea_transcribe_ui_hook`` below, since these DO map onto plain
+#     attributes on ``sandbox.image_processor_service`` (``.kanbun``,
+#     ``.kanbun_main``, ``.tables``) that this plugin's overridden service
+#     class (see the ``_register(..., override=True)`` calls above) already
+#     reads at call time.
+#
+# A single "kanbun_mode" select (none/kanbun/kanbun_main) is used instead of
+# two separate checkboxes so the composer can't submit both at once — the
+# same mutual exclusivity the CLI's own ``--kanbun``/``--kanbun-main``
+# argparse group enforces.
+
+_EA_TRANSCRIBE_FIELDS = [
+    UiField(
+        name="vertical", label="Vertical text (top-to-bottom, right-to-left columns)",
+        kind="checkbox", required=False, group="East Asia options",
+    ),
+    UiField(
+        name="spread", label="Two-page spread (two facing pages scanned together)",
+        kind="checkbox", required=False, group="East Asia options",
+    ),
+    UiField(
+        name="passes", label="Number of OCR passes (default 1)",
+        kind="text", required=False, group="East Asia options",
+    ),
+    UiField(
+        name="kanbun_mode", label="Kanbun (漢文) handling", kind="select", required=False,
+        choices=[
+            {"value": "none", "label": "Not kanbun (default)"},
+            {"value": "kanbun", "label": "Kanbun — preserve all kundoku annotations"},
+            {"value": "kanbun_main", "label": "Kanbun — main characters only, omit annotations"},
+        ],
+        group="East Asia options",
+    ),
+    UiField(
+        name="preserve_tables", label="Preserve tables as Markdown",
+        kind="checkbox", required=False, group="East Asia options",
+    ),
+]
+
+
+def _apply_ea_transcribe_ui_hook(sandbox, fields: dict) -> None:
+    """Apply this plugin's composer-only settings (kanbun mode, table preservation) to the job's image processor.
+
+    Called by the base plugin's ``run_ui_action``/``preview_ui_action`` via
+    ``apply_extension_ui_hooks`` for every submitted or previewed transcribe
+    job where Chinese, Japanese, or Korean is the selected language. A
+    no-op for any field left at its default — matching how the equivalent
+    CLI flags simply aren't passed when a professor doesn't need them.
+
+    ``vertical``/``spread``/``passes`` are deliberately NOT handled here —
+    see this module's "Web UI composer integration" section above for why
+    those are read directly by the base plugin's own ``run_ui_action``
+    instead.
+
+    Args:
+        sandbox: The already-constructed ``SandboxProcessor`` for this job.
+        fields: The full submitted/previewed composer fields dict; only
+                this hook's own ``"kanbun_mode"``/``"preserve_tables"`` keys
+                are read.
+    """
+    kanbun_mode = str(fields.get("kanbun_mode", "")).strip().lower()
+    if kanbun_mode == "kanbun":
+        sandbox.image_processor_service.kanbun = True
+    elif kanbun_mode == "kanbun_main":
+        sandbox.image_processor_service.kanbun_main = True
+
+    preserve_tables = str(fields.get("preserve_tables", "")).strip().lower() in ("true", "1", "on", "yes")
+    if preserve_tables:
+        sandbox.image_processor_service.tables = True
+
+
+for _token in ("zh", "jp", "kr"):
+    register_extension_ui_hooks(
+        action_id="transcribe",
+        token=_token,
+        fields=_EA_TRANSCRIBE_FIELDS,
+        apply=_apply_ea_transcribe_ui_hook,
+    )
 
 
 # ── Shared execution helper ────────────────────────────────────────────────────
