@@ -7,7 +7,7 @@ from typing import Optional, Any
 from ..models import (
     model_supports_vision, get_vision_capable_models, resolve_model,
     get_model_system_role,
-    get_model_max_completion_tokens, maybe_sync_model_pricing, get_default_model,
+    get_model_max_completion_tokens, maybe_sync_model_pricing,
 )
 from .base_service import BaseService
 from ..console import print_pass_result
@@ -16,6 +16,7 @@ from ..tracking.token_tracker import TokenTracker
 from .constants import MAX_RETRIES
 from .prompts import OcrPromptSpec
 
+from src.settings import OCR_ROLE
 from ..settings import (
     OCR_TEMPERATURE,
     OCR_MAX_TOKENS,
@@ -37,6 +38,11 @@ class ImageProcessorService(BaseService):
     every method, since they stay the same for an entire transcription run.
     See the plugin's module docstring for what kanbun means.
     """
+
+    # Which models this service's work should use — see
+    # src/runtime/model_role.py. Read by BaseService._get_model().
+    # The base transcription plugin's role: same job, different languages.
+    model_role = OCR_ROLE
 
     def __init__(self, api_key: str, professor: Optional[str] = None, token_tracker: Optional[TokenTracker] = None, token_tracker_file: Optional[str] = None, model: Optional[str] = None, temperature: Optional[float] = None, top_p: Optional[float] = None, max_tokens: Optional[int] = None):
         """Set up the service with the professor's API key and this run's model/sampling settings.
@@ -68,19 +74,6 @@ class ImageProcessorService(BaseService):
         self.kanbun: bool = False
         self.kanbun_main: bool = False
         self.tables: bool = False
-
-    def _get_model(self) -> str:
-        """Pick which AI model to use for OCR: the professor's custom choice if it supports images, otherwise the configured OCR default."""
-        ocr_default = get_default_model("ocr")
-        model = resolve_model(
-            requested_model=self.custom_model,
-            prefer_model=ocr_default,
-            require_vision=True,
-        )
-        maybe_sync_model_pricing(model)
-        if not self.custom_model and model != ocr_default:
-            logging.warning(f"OCR default model '{ocr_default}' not available; using '{model}' instead.")
-        return model
 
     def _create_ocr_prompt(self, target_language: str, vertical: bool = False, spread: bool = False) -> tuple[str, str]:
         """Build the system and user prompt text for one OCR request, combining the caller's arguments with this instance's kanbun/tables settings."""

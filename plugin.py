@@ -186,6 +186,7 @@ _register(
 from src.cli import add_common_flags, add_notes_flags           # noqa: E402
 from src.config import parse_single_language_code, register_language  # noqa: E402
 from src.errors import CLIError                                    # noqa: E402
+from src.settings import OCR_ROLE, TRANSCRIPTION_REVIEW_ROLE  # noqa: E402
 from src.runtime.ui_action import UiField, register_extension_ui_hooks  # noqa: E402
 from src.services.constants import DEFAULT_PARALLEL_WORKERS       # noqa: E402
 from src.settings import DEFAULT_OCR_PASSES                       # noqa: E402
@@ -364,6 +365,16 @@ class TranscriptionPlugin:
     docstring above. See the module docstring above for how this plugin
     combines with the base plugin at startup.
     """
+
+    # Which models this plugin's work should use. Required of every plugin
+    # (see src/runtime/model_role.py). Deliberately the base plugin's roles:
+    # this extension does the same jobs, for different languages, so it should
+    # use the same models — and declaring its own constants of the same names
+    # would collide with the base plugin's in src.settings.
+    model_roles = {
+        "ocr": OCR_ROLE,
+        "transcription_review": TRANSCRIPTION_REVIEW_ROLE,
+    }
 
     commands: list[str] = ["transcribe", "transcription_review"]
     # ``handles`` lists the full language names (as returned by
