@@ -73,3 +73,38 @@ class TestRunTranscriptionReview:
         sandbox.transcription_review_service.review_transcription.assert_called_once_with(
             "text", "Japanese", kanbun=False, kanbun_main=False
         )
+
+
+class TestReviewUsesTheModelsItWasToldTo:
+    """The same models the base plugin reviews with, not whatever is cheapest.
+
+    This service is the East Asian counterpart of the base plugin's, not a
+    different job. It carried no model preference at all, so it fell through to
+    the cheapest model in the catalogue — meaning a professor's choice was
+    honoured for English and silently ignored for Japanese, Korean and Chinese,
+    which is the harder reading of the two.
+    """
+
+    def _service_class(self):
+        # Already loaded at the top of this module.
+        return sys.modules["src.services.transcription_review_service"].TranscriptionReviewService
+
+    def test_it_declares_a_model_preference(self):
+        assert self._service_class().model_role is not None
+
+    def test_it_is_the_same_preference_the_base_plugin_uses(self):
+        from src.settings import TRANSCRIPTION_REVIEW_ROLE
+
+        assert self._service_class().model_role is TRANSCRIPTION_REVIEW_ROLE
+
+    def test_it_names_models_rather_than_leaving_the_choice_open(self):
+        """An empty preference is the same as none: the cheapest wins again."""
+        role = self._service_class().model_role
+        assert role.models, "the preference names no models, so nothing is preferred"
+
+    def test_english_and_east_asian_review_agree_on_the_models(self):
+        """The two are the same job; only the guidance given to them differs."""
+        base = sys.modules["src.services.transcription_review_service"]
+        from src.settings import TRANSCRIPTION_REVIEW_ROLE
+
+        assert base.TranscriptionReviewService.model_role.models == TRANSCRIPTION_REVIEW_ROLE.models

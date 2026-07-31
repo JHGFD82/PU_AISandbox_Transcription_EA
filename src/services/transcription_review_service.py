@@ -13,6 +13,7 @@ from .api_errors import handle_api_errors
 from .base_service import BaseService
 from .prompts import TranscriptionReviewPromptSpec
 from ..settings import (
+    TRANSCRIPTION_REVIEW_ROLE,
     TRANSCRIPTION_REVIEW_TEMPERATURE,
     TRANSCRIPTION_REVIEW_TOP_P,
     TRANSCRIPTION_REVIEW_MAX_TOKENS,
@@ -28,6 +29,15 @@ class TranscriptionReviewService(BaseService):
     by the service after parsing the response, rather than relying on the model to
     self-report its name.
     """
+
+    # The same models the base plugin reviews with. This service is the East
+    # Asian counterpart of that one, not a different job, and reviewing a
+    # Japanese transcription is if anything the harder of the two — so it must
+    # not quietly run on something else. Without this it fell through to
+    # whichever model in the catalogue happened to be cheapest, which meant a
+    # professor's choice was honoured for English and ignored for Japanese,
+    # Korean and Chinese.
+    model_role = TRANSCRIPTION_REVIEW_ROLE
 
     def __init__(
         self,
