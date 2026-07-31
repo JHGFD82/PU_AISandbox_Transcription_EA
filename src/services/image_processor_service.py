@@ -5,9 +5,9 @@ import os
 from typing import Optional, Any
 
 from ..models import (
-    model_supports_vision, get_vision_capable_models, resolve_model,
+    model_supports_vision, get_vision_capable_models,
     get_model_system_role,
-    get_model_max_completion_tokens, maybe_sync_model_pricing,
+    get_model_max_completion_tokens,
 )
 from .base_service import BaseService
 from ..console import print_pass_result
